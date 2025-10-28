@@ -1,59 +1,60 @@
-name: Regex Security Scan Before Merge
+name: Semgrep Security Scan Before Merge
 
 on:
   pull_request:
     branches:
+      - production
       - main
 
 jobs:
-  regex_scan:
+  security_scan:
     runs-on: ubuntu-latest
-    name: Malicious Pattern Detection
+    name: Semgrep Malicious Code Scan
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Scan for suspicious code
-        id: scan
+      - name: Install Semgrep
         run: |
-          echo "Scanning for suspicious code patterns..."
-          MALICIOUS=$(grep -R -n -E "(eval\(|exec\(|os.system|subprocess.call|shell_exec|base64_decode|curl|wget|powershell|Invoke-Expression)" . || true)
-          if [ ! -z "$MALICIOUS" ]; then
-            echo "❌ Malicious patterns detected:"
-            echo "$MALICIOUS"
-            echo "found=true" >> $GITHUB_OUTPUT
-          else
-            echo "✅ No malicious patterns found."
-            echo "found=false" >> $GITHUB_OUTPUT
-          fi
+          pip install semgrep
 
-      - name: Send alert email
-        if: steps.scan.outputs.found == 'true'
+      - name: Run Semgrep Security Rules
+        id: semgrep
+        run: |
+          echo "🔍 Running Semgrep security analysis..."
+          semgrep --config p/ci --json --output semgrep-report.json || true
+          
+          # Detect findings
+          ISSUE_COUNT=$(jq '.results | length' semgrep-report.json)
+          echo "issue_count=$ISSUE_COUNT" >> $GITHUB_OUTPUT
+
+      - name: Send Email Notification (if issues found)
+        if: steps.semgrep.outputs.issue_count != '0'
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
           server_port: 587
           username: ${{ secrets.EMAIL_USER }}
           password: ${{ secrets.EMAIL_PASS }}
-          subject: "🚨 Malicious Code Detected in PR #${{ github.event.pull_request.number }}"
+          subject: "🚨 Semgrep Security Findings in PR #${{ github.event.pull_request.number }}"
           body: |
-            Suspicious code detected in:
-            ${{ github.event.pull_request.html_url }}
-            ---
-            $MALICIOUS
+            Semgrep detected potential malicious or insecure code.
+            PR Link: ${{ github.event.pull_request.html_url }}
+            Number of findings: ${{ steps.semgrep.outputs.issue_count }}
           to: "security-team@example.com"
           from: "github-bot@example.com"
+        continue-on-error: true
 
-      - name: Block merge
-        if: steps.scan.outputs.found == 'true'
+      - name: Fail if issues found
+        if: steps.semgrep.outputs.issue_count != '0'
         run: |
-          echo "Merge blocked due to detected malicious patterns."
+          echo "❌ Malicious or insecure code detected. Merge blocked."
           exit 1
 
-  approve:
+  approval:
     name: Manual Approval for Production Merge
-    needs: regex_scan
-    if: needs.regex_scan.result == 'success'
+    needs: security_scan
+    if: needs.security_scan.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Wait for manual approval
