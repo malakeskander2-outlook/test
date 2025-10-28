@@ -3,7 +3,6 @@ name: Regex Security Scan Before Merge
 on:
   pull_request:
     branches:
-      - production
       - main
 
 jobs:
